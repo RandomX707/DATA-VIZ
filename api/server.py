@@ -531,7 +531,7 @@ async def phase2_generate(sid: str):
                     data={
                         "attempt": attempt + 1,
                         "sql_preview": query_plan.sql[:200] + ("..." if len(query_plan.sql) > 200 else ""),
-                        "calculated_columns": [c.name for c in query_plan.calculated_columns],
+                        "calculated_columns": [c["name"] if isinstance(c, dict) else c.name for c in query_plan.calculated_columns],
                     },
                     status="info",
                 )
