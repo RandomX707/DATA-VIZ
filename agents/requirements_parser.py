@@ -122,3 +122,10 @@ def parse_requirements(
         f"Agent 1 (Requirements Parser) failed to return valid JSON after 3 attempts. "
         f"Last error: {last_error}"
     )
+
+
+class RequirementsParser:
+    """Class wrapper so Streamlit app can call parser.run(requirements, dataset_info)."""
+
+    def run(self, requirements: str, dataset_info: DatasetInfo, verbose: bool = False) -> dict:
+        return parse_requirements(requirements, dataset_info, verbose=verbose)

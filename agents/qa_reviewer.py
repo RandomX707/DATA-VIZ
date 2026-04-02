@@ -139,3 +139,30 @@ def run_qa(
         issues=issues,
         suggestions=["QA LLM check failed; rule-based checks only were applied."],
     )
+
+
+class QAReviewer:
+    """Class wrapper so Streamlit app can call qa.run(dashboard_plan, dataset_info, chart_actions)."""
+
+    def run(
+        self,
+        dashboard_plan: DashboardPlan,
+        dataset_info: DatasetInfo,
+        chart_actions: list[tuple[int, str]],
+        superset_client: SupersetClient | None = None,
+        verbose: bool = False,
+    ) -> QAReport:
+        if superset_client is None:
+            # Create a minimal no-op client stub so run_qa can still do rule-based checks
+            # by skipping the chart ID verification loop
+            class _NoopClient:
+                def _request(self, *a, **kw):
+                    raise RuntimeError("no client")
+            superset_client = _NoopClient()  # type: ignore[assignment]
+        return run_qa(
+            dashboard_plan=dashboard_plan,
+            dataset_info=dataset_info,
+            chart_actions=chart_actions,
+            superset_client=superset_client,
+            verbose=verbose,
+        )

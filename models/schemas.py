@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any
 from pydantic import BaseModel
 
 
@@ -61,3 +62,47 @@ class CatalogueEntry(BaseModel):
     time_column: str | None = None
     worked_well: bool
     notes: str
+
+
+# ── Phase 1 & 2 models ────────────────────────────────────────────────────────
+
+class ColumnProfile(BaseModel):
+    column_name: str
+    data_type: str
+    sample_values: list[str]      # up to 5 sample values as strings
+    null_pct: float
+    is_likely_pk: bool
+    is_likely_fk: bool
+    is_likely_date: bool
+
+
+class TableProfile(BaseModel):
+    table_name: str
+    row_count: int
+    columns: list[ColumnProfile]
+    sample_rows: list[dict[str, Any]]   # 3 sample rows as dicts
+
+
+class SchemaMap(BaseModel):
+    all_tables: list[str]
+    profiled_tables: list[TableProfile]
+    suggested_primary: str
+    suggested_joins: list[str]
+    agent_reasoning: str
+
+
+class QueryPlan(BaseModel):
+    sql: str
+    calculated_columns: list[dict[str, Any]]
+    dataset_name_suggestion: str
+    grain_description: str
+    agent_reasoning: str
+
+
+class DatasetQAReport(BaseModel):
+    passed: bool
+    row_count: int
+    duplicate_row_count: int
+    issues: list[str]
+    suggestions: list[str]
+    sample_rows: list[dict[str, Any]]   # 5 sample rows from running the query

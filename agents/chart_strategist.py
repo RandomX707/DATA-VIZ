@@ -151,3 +151,25 @@ def plan_dashboard(
     raise RuntimeError(
         f"Agent 2 (Chart Strategist) failed after 3 attempts. Last error: {last_error}"
     )
+
+
+class ChartStrategist:
+    """Class wrapper so Streamlit app can call strategist.run(parsed_reqs, dataset_info, catalogue)."""
+
+    def run(
+        self,
+        parsed_requirements: dict,
+        dataset_info: DatasetInfo,
+        catalogue,
+        dashboard_title: str = "Dashboard",
+    ) -> DashboardPlan:
+        from tools.catalogue import CatalogueManager
+        all_intents = " ".join(c.get("intent", "") for c in parsed_requirements.get("charts", []))
+        similar = catalogue.find_similar(all_intents)
+        catalogue_context = catalogue.build_context_string(similar)
+        return plan_dashboard(
+            parsed_requirements=parsed_requirements,
+            dataset_info=dataset_info,
+            catalogue_context=catalogue_context,
+            dashboard_title=dashboard_title,
+        )

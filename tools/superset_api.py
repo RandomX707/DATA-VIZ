@@ -12,7 +12,7 @@ from models.schemas import ChartSpec, DatasetColumn, DatasetInfo, FilterSpec
 
 # Map spec viz_type names to Superset 5.x internal names
 VIZ_TYPE_MAP = {
-    "bar": "dist_bar",
+    "bar": "bar",
     "scatter": "echarts_scatter",
     "big_number_total": "big_number_total",
     "echarts_timeseries_line": "echarts_timeseries_line",
@@ -57,7 +57,7 @@ def build_chart_params(chart_spec: ChartSpec) -> dict:
             "show_legend": True,
         }
 
-    if viz == "dist_bar":
+    if viz == "bar":
         return {
             "viz_type": viz,
             "metrics": chart_spec.metrics,
@@ -66,6 +66,10 @@ def build_chart_params(chart_spec: ChartSpec) -> dict:
             "row_limit": chart_spec.row_limit or 50,
             "order_desc": True,
             "show_legend": False,
+            "x_axis": chart_spec.groupby[0] if chart_spec.groupby else None,
+            "x_axis_sort_asc": False,
+            "x_axis_sort_series": "name",
+            "x_axis_sort_series_ascending": False,
         }
 
     if viz == "table":

@@ -1,6 +1,29 @@
+# Environment
 .env
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+
+# Runtime outputs
 runs/
 previews/
 charts_catalogue.json
+
+# Claude
+CLAUDE.md
+IMPLEMENTATION.md
+.claude/
+*.claude
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Misc
+.DS_Store
+*.log
