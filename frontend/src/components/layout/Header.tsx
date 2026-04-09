@@ -21,11 +21,7 @@ export function Header() {
 
   return (
     <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card px-6">
-      <span className="text-sm font-semibold text-text">
-        Superset Dashboard Builder
-      </span>
-
-      <nav className="flex items-center gap-1">
+<nav className="flex items-center gap-1">
         {STEPS.map((step, idx) => {
           const isActive = activePhase === step.phase
           const isCompleted =

@@ -135,7 +135,7 @@ def sse(payload: dict) -> str:
 
 # ── FastAPI app ────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Superset Dashboard Builder API")
+app = FastAPI(title="DATA VIZ API")
 
 app.add_middleware(
     CORSMiddleware,

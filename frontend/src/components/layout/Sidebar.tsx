@@ -5,7 +5,7 @@ import {
   Cpu,
   ChevronDown,
   ChevronRight,
-  Hexagon,
+  BarChart3,
   ScrollText,
   Download,
 } from 'lucide-react'
@@ -135,8 +135,12 @@ export function Sidebar() {
     <aside className="flex h-full w-[280px] shrink-0 flex-col overflow-y-auto border-r border-border bg-card">
       {/* Logo */}
       <div className="flex h-14 items-center gap-2 border-b border-border px-4">
-        <Hexagon size={20} className="text-accent" fill="currentColor" fillOpacity={0.2} />
-        <span className="text-sm font-bold text-accent">Dashboard Builder</span>
+        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-violet-500 to-cyan-400 shadow-sm">
+          <BarChart3 size={15} className="text-white" strokeWidth={2.5} />
+        </div>
+        <span className="text-sm font-bold tracking-wide bg-gradient-to-r from-violet-500 to-cyan-400 bg-clip-text text-transparent">
+          DATA VIZ
+        </span>
       </div>
 
       {/* DB Connection */}
