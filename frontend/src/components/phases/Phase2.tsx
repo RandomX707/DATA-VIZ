@@ -69,7 +69,10 @@ export function Phase2() {
   function handleGenerate() {
     if (!sessionId) return
     reset()
-    start(`/api/sessions/${sessionId}/phase2/generate`)
+    start(
+      `/api/sessions/${sessionId}/phase2/generate`,
+      `/api/sessions/${sessionId}/state`
+    )
   }
 
   async function handleConfirm() {

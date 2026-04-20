@@ -11,6 +11,7 @@ import type {
   QAReport,
   ExcludedTable,
   AuditEntry,
+  ChartSpec,
 } from '../types'
 import { getAuditLog } from '../api/client'
 
@@ -76,6 +77,14 @@ interface AppState {
 
   phase3: Phase3State
   setPhase3: (p: Partial<Phase3State>) => void
+
+  phase3Step: 1 | 2 | 3
+  editedPlan: DashboardPlan | null
+  setPhase3Step: (step: 1 | 2 | 3) => void
+  setEditedPlan: (plan: DashboardPlan | null) => void
+  removeChartFromPlan: (chartTitle: string) => void
+  updateChartInPlan: (chartTitle: string, updates: Partial<ChartSpec>) => void
+  addChartToPlan: (chart: ChartSpec) => void
 }
 
 const DEFAULT_DB_CONFIG: DbConfig = {
@@ -88,9 +97,11 @@ const DEFAULT_DB_CONFIG: DbConfig = {
 }
 
 const DEFAULT_SUPERSET_CONFIG: SupersetConfig = {
-  url: 'http://localhost:8088',
+  url: '',
   username: 'admin',
   password: '',
+  session_cookie: '',
+  csrf_token: '',
 }
 
 export const useAppStore = create<AppState>()(
@@ -165,6 +176,29 @@ export const useAppStore = create<AppState>()(
       },
       setPhase3: (p) =>
         set((state) => ({ phase3: { ...state.phase3, ...p } })),
+
+      phase3Step: 1 as (1 | 2 | 3),
+      editedPlan: null,
+      setPhase3Step: (step) => set({ phase3Step: step }),
+      setEditedPlan: (plan) => set({ editedPlan: plan }),
+      removeChartFromPlan: (chartTitle) =>
+        set((s) => ({
+          editedPlan: s.editedPlan
+            ? { ...s.editedPlan, charts: s.editedPlan.charts.filter((c) => c.title !== chartTitle) }
+            : null,
+        })),
+      updateChartInPlan: (chartTitle, updates) =>
+        set((s) => ({
+          editedPlan: s.editedPlan
+            ? { ...s.editedPlan, charts: s.editedPlan.charts.map((c) => c.title === chartTitle ? { ...c, ...updates } : c) }
+            : null,
+        })),
+      addChartToPlan: (chart) =>
+        set((s) => ({
+          editedPlan: s.editedPlan
+            ? { ...s.editedPlan, charts: [...s.editedPlan.charts, chart] }
+            : null,
+        })),
     }),
     {
       name: 'superset-dashboard-builder',

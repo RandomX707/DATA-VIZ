@@ -17,6 +17,8 @@ export interface SupersetConfig {
   url: string
   username: string
   password: string
+  session_cookie?: string
+  csrf_token?: string
 }
 
 export interface ColumnProfile {
@@ -136,4 +138,10 @@ export interface AuditEntry {
 
 export interface AuditLog {
   entries: AuditEntry[]
+}
+
+export interface ChartPreviewData {
+  rows: Array<{ label: string; value: number }>
+  total?: number | null
+  error?: string | null
 }

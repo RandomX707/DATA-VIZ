@@ -1,4 +1,4 @@
-import type { TableProfile, AuditLog } from '../types'
+import type { TableProfile, AuditLog, ChartPreviewData, DashboardPlan } from '../types'
 
 const BASE = '/api'
 
@@ -57,7 +57,7 @@ export async function updateConfig(
       username: string
       password: string
     }
-    superset?: { url: string; username: string; password: string }
+    superset?: { url: string; username: string; password: string; session_cookie?: string; csrf_token?: string }
     llm_model?: string
   }
 ): Promise<void> {
@@ -136,6 +136,31 @@ export function buildDashboardSSE(
   if (params.dashboard_id) qs.set('dashboard_id', params.dashboard_id)
   qs.set('dry_run', String(params.dry_run))
   return new EventSource(`/api/sessions/${sid}/phase3/build?${qs.toString()}`)
+}
+
+export async function getChartPreview(
+  sessionId: string,
+  params: {
+    viz_type: string
+    metric_col: string
+    aggregate?: string
+    dimension_col?: string
+    time_col?: string
+    time_grain?: string
+    row_limit?: number
+  }
+): Promise<ChartPreviewData> {
+  const qs = new URLSearchParams({ viz_type: params.viz_type, metric_col: params.metric_col })
+  if (params.aggregate) qs.set('aggregate', params.aggregate)
+  if (params.dimension_col) qs.set('dimension_col', params.dimension_col)
+  if (params.time_col) qs.set('time_col', params.time_col)
+  if (params.time_grain) qs.set('time_grain', params.time_grain)
+  if (params.row_limit != null) qs.set('row_limit', String(params.row_limit))
+  return request('GET', `/sessions/${sessionId}/phase3/chart-preview?${qs.toString()}`)
+}
+
+export async function updatePlan(sessionId: string, plan: DashboardPlan): Promise<void> {
+  return request('POST', `/sessions/${sessionId}/phase3/plan/update`, { plan })
 }
 
 export async function getAuditLog(sessionId: string): Promise<AuditLog> {

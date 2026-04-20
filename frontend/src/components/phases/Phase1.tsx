@@ -257,7 +257,8 @@ export function Phase1() {
     start(
       `/api/sessions/${sessionId}/phase1/explore?prompt=${encodeURIComponent(
         businessPrompt
-      )}`
+      )}`,
+      `/api/sessions/${sessionId}/state`
     )
   }
 

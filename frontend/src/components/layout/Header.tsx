@@ -15,9 +15,11 @@ export function Header() {
   function canNavigateTo(phase: 1 | 2 | 3): boolean {
     if (phase === 1) return true
     if (phase === 2) return phase1.confirmed
-    if (phase === 3) return phase2.confirmed
+    if (phase === 3) return true
     return false
   }
+
+  const phase3DirectAccess = activePhase === 3 && !(phase1.confirmed && phase2.confirmed)
 
   return (
     <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card px-6">
@@ -61,7 +63,14 @@ export function Header() {
                     step.phase
                   )}
                 </span>
-                {step.label}
+                <span className="flex flex-col items-start">
+                  <span>{step.label}</span>
+                  {step.phase === 3 && phase3DirectAccess && (
+                    <span className="text-[9px] text-text-dim font-normal leading-tight">
+                      Using existing dataset
+                    </span>
+                  )}
+                </span>
               </button>
 
               {idx < STEPS.length - 1 && (

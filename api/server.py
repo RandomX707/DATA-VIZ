@@ -65,6 +65,8 @@ def new_session() -> dict:
             "url": config.SUPERSET_URL,
             "username": config.SUPERSET_USERNAME,
             "password": config.SUPERSET_PASSWORD,
+            "session_cookie": "",
+            "csrf_token": "",
         },
         "llm_model": config.LLM_MODEL,
         "db_connector": None,
@@ -161,6 +163,8 @@ class SupersetConfig(BaseModel):
     url: str = "http://localhost:8088"
     username: str = "admin"
     password: str = ""
+    session_cookie: str = ""
+    csrf_token: str = ""
 
 
 class SessionConfigUpdate(BaseModel):
@@ -680,16 +684,22 @@ async def phase3_plan(
                 config.LLM_MODEL = sess["llm_model"]
 
             superset_cfg = sess["superset"]
+            _superset_url = superset_cfg["url"] or config.SUPERSET_URL
+            print(f"[Phase3/plan] Using Superset URL: {_superset_url}", flush=True)
 
             loop.call_soon_threadsafe(
                 queue.put_nowait,
                 {"type": "progress", "message": "Authenticating with Superset...", "step": 1, "total": 5},
             )
             from tools.superset_api import SupersetClient
+            _session_cookie = superset_cfg.get("session_cookie", "")
+            _csrf_token = superset_cfg.get("csrf_token", "")
             client = SupersetClient(
-                base_url=superset_cfg["url"] or config.SUPERSET_URL,
+                base_url=_superset_url,
                 username=superset_cfg["username"] or config.SUPERSET_USERNAME,
                 password=superset_cfg["password"] or config.SUPERSET_PASSWORD,
+                session_cookie=_session_cookie or None,
+                csrf_token=_csrf_token or None,
             )
             client.authenticate()
 
@@ -819,14 +829,19 @@ async def phase3_build(
     dry_run: bool = Query(default=False),
 ):
     sess = get_session(sid)
-    if not sess["phase3"].get("plan_ready"):
-        raise HTTPException(status_code=400, detail="No dashboard plan. Run plan first.")
 
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_event_loop()
 
     def worker():
         try:
+            if not sess["phase3"].get("plan_ready"):
+                loop.call_soon_threadsafe(
+                    queue.put_nowait,
+                    {"type": "error", "message": "No dashboard plan found. Please run 'Plan Dashboard' first."},
+                )
+                return
+
             if sess.get("llm_model"):
                 config.LLM_MODEL = sess["llm_model"]
 
@@ -856,10 +871,14 @@ async def phase3_build(
                 {"type": "progress", "message": "Authenticating with Superset...", "step": 1, "total": 7},
             )
             from tools.superset_api import SupersetClient, build_position_json
+            _session_cookie = superset_cfg.get("session_cookie", "")
+            _csrf_token = superset_cfg.get("csrf_token", "")
             client = SupersetClient(
                 base_url=superset_cfg["url"] or config.SUPERSET_URL,
                 username=superset_cfg["username"] or config.SUPERSET_USERNAME,
                 password=superset_cfg["password"] or config.SUPERSET_PASSWORD,
+                session_cookie=_session_cookie or None,
+                csrf_token=_csrf_token or None,
             )
             client.authenticate()
 
@@ -884,8 +903,8 @@ async def phase3_build(
                     },
                 )
                 chart_id, action = client.upsert_chart(dataset_info.id, chart_spec, existing_charts)
-                chart_ids.append(chart_id)
-                chart_actions.append((chart_id, action))
+                chart_ids.append(int(chart_id))
+                chart_actions.append((int(chart_id), action))
                 append_audit(
                     sess, 3, "chart_created",
                     f"Chart created: {chart_spec.title}",
@@ -893,12 +912,25 @@ async def phase3_build(
                     data={"chart_id": chart_id, "action": action},
                     status="success",
                 )
-
             loop.call_soon_threadsafe(
                 queue.put_nowait,
                 {"type": "progress", "message": "Building dashboard layout...", "step": 4, "total": 7},
             )
             position_json = build_position_json(chart_ids, dashboard_plan.charts)
+
+            # Sanity-check: every chart ID in position_json must match the collected IDs
+            in_layout = {
+                v["meta"]["chartId"]
+                for v in position_json.values()
+                if isinstance(v, dict) and v.get("type") == "CHART"
+            }
+            collected = set(chart_ids)
+            if in_layout != collected:
+                raise ValueError(
+                    f"position_json ID mismatch — "
+                    f"collected={sorted(collected)}, "
+                    f"in_layout={sorted(in_layout)}"
+                )
 
             loop.call_soon_threadsafe(
                 queue.put_nowait,
@@ -1044,6 +1076,119 @@ async def phase3_build(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ── Phase 3 extra endpoints ───────────────────────────────────────────────────
+
+
+class UpdatePlanBody(BaseModel):
+    plan: Any
+
+
+@app.get("/api/sessions/{sid}/phase3/chart-preview")
+async def chart_preview(
+    sid: str,
+    viz_type: str = Query(...),
+    metric_col: str = Query(...),
+    aggregate: str = Query("SUM"),
+    dimension_col: str | None = Query(default=None),
+    time_col: str | None = Query(default=None),
+    time_grain: str = Query("P1M"),
+    row_limit: int = Query(10),
+):
+    sess = get_session(sid)
+    dataset_info = sess["phase3"].get("dataset_info")
+    if dataset_info is None:
+        raise HTTPException(status_code=400, detail="No dataset loaded yet. Run Phase 3 plan first.")
+
+    from tools.superset_api import SupersetClient
+    from tools.column_sampler import ColumnSampler
+
+    sup_cfg = sess["superset"]
+    try:
+        client = SupersetClient(
+            base_url=sup_cfg["url"] or config.SUPERSET_URL,
+            username=sup_cfg["username"] or config.SUPERSET_USERNAME,
+            password=sup_cfg["password"] or config.SUPERSET_PASSWORD,
+            session_cookie=sup_cfg.get("session_cookie") or None,
+            csrf_token=sup_cfg.get("csrf_token") or None,
+        )
+        client.authenticate()
+    except Exception as e:
+        return {"rows": [], "total": None, "error": f"Superset auth failed: {e}"}
+
+    sampler = ColumnSampler(client)
+    table_ref = sampler._get_table_ref(dataset_info)
+    database_id = sampler._get_database_id(dataset_info.id)
+    if database_id is None:
+        return {"rows": [], "total": None, "error": "Could not determine database ID"}
+
+    def _q(name: str) -> str:
+        return f'"{name.replace(chr(34), chr(34) + chr(34))}"'
+
+    grain_map = {"P1D": "day", "P1W": "week", "P1M": "month", "P1Y": "year"}
+    grain_sql = grain_map.get(time_grain, "month")
+
+    try:
+        if viz_type == "big_number_total" or (not dimension_col and not time_col):
+            sql = f"SELECT {aggregate}({_q(metric_col)}) AS value FROM {table_ref}"
+            resp = client._request(
+                "POST",
+                "/api/v1/sqllab/execute/",
+                json={"database_id": database_id, "sql": sql, "runAsync": False, "queryLimit": 1},
+            )
+            rows_data = resp.json().get("data", [])
+            total_val = rows_data[0].get("value") if rows_data else None
+            total = float(total_val) if total_val is not None else 0.0
+            return {"rows": [], "total": total, "error": None}
+        elif viz_type == "echarts_timeseries_line" and time_col:
+            sql = (
+                f"SELECT DATE_TRUNC('{grain_sql}', {_q(time_col)}) AS label, "
+                f"{aggregate}({_q(metric_col)}) AS value "
+                f"FROM {table_ref} "
+                f"GROUP BY 1 ORDER BY 1 LIMIT {row_limit}"
+            )
+        else:
+            dim = dimension_col or metric_col
+            sql = (
+                f"SELECT {_q(dim)} AS label, "
+                f"{aggregate}({_q(metric_col)}) AS value "
+                f"FROM {table_ref} "
+                f"GROUP BY {_q(dim)} "
+                f"ORDER BY 2 DESC LIMIT {row_limit}"
+            )
+
+        resp = client._request(
+            "POST",
+            "/api/v1/sqllab/execute/",
+            json={"database_id": database_id, "sql": sql, "runAsync": False, "queryLimit": row_limit},
+        )
+        rows_data = resp.json().get("data", [])
+        rows = []
+        for r in rows_data:
+            vals = list(r.values())
+            label = str(vals[0]) if vals[0] is not None else "null"
+            value = float(vals[1]) if len(vals) > 1 and vals[1] is not None else 0.0
+            rows.append({"label": label, "value": value})
+        return {"rows": rows, "total": None, "error": None}
+    except Exception as e:
+        return {"rows": [], "total": None, "error": str(e)}
+
+
+@app.post("/api/sessions/{sid}/phase3/plan/update")
+async def update_plan(sid: str, body: UpdatePlanBody):
+    sess = get_session(sid)
+    from models.schemas import DashboardPlan
+    plan_dict = dict(body.plan) if body.plan else {}
+    # Ensure chart specs include required `filters` field (absent in TypeScript interface)
+    for chart in plan_dict.get("charts", []):
+        if isinstance(chart, dict):
+            chart.setdefault("filters", [])
+            chart.setdefault("row_limit", None)
+            chart.setdefault("sort_by", None)
+    plan_dict.setdefault("position_json", {})
+    sess["phase3"]["dashboard_plan"] = DashboardPlan(**plan_dict)
+    return {"ok": True}
 
 
 # ── Audit log endpoints ───────────────────────────────────────────────────────

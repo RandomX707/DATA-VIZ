@@ -12,7 +12,7 @@ interface UseSSEReturn {
   isDone: boolean
   error: string | null
   result: unknown
-  start: (url: string) => void
+  start: (url: string, sessionCheckUrl?: string) => void
   reset: () => void
   stop: () => void
 }
@@ -55,7 +55,7 @@ export function useSSE(): UseSSEReturn {
   }, [close])
 
   const start = useCallback(
-    (url: string): void => {
+    (url: string, sessionCheckUrl?: string): void => {
       // Close any existing connection first
       close()
 
@@ -65,45 +65,68 @@ export function useSSE(): UseSSEReturn {
       setError(null)
       setResult(null)
 
-      const es = new EventSource(url)
-      esRef.current = es
+      const openConnection = () => {
+        const es = new EventSource(url)
+        esRef.current = es
 
-      es.onmessage = (e: MessageEvent) => {
-        // Guard: ignore events from a stale connection
-        if (esRef.current !== es) return
+        es.onmessage = (e: MessageEvent) => {
+          // Guard: ignore events from a stale connection
+          if (esRef.current !== es) return
 
-        try {
-          const event: SSEEvent = JSON.parse(e.data as string)
+          try {
+            const event: SSEEvent = JSON.parse(e.data as string)
 
-          if (event.type === 'progress') {
-            setLogs((prev) => [
-              ...prev,
-              {
-                message: event.message ?? '',
-                timestamp: new Date().toLocaleTimeString(),
-              },
-            ])
-          } else if (event.type === 'done') {
-            setIsStreaming(false)
-            setIsDone(true)
-            setResult(event.data)
-            close()
-          } else if (event.type === 'error') {
-            setIsStreaming(false)
-            setError(event.message ?? 'Unknown error')
-            close()
+            if (event.type === 'progress') {
+              setLogs((prev) => [
+                ...prev,
+                {
+                  message: event.message ?? '',
+                  timestamp: new Date().toLocaleTimeString(),
+                },
+              ])
+            } else if (event.type === 'done') {
+              setIsStreaming(false)
+              setIsDone(true)
+              setResult(event.data)
+              close()
+            } else if (event.type === 'error') {
+              setIsStreaming(false)
+              setError(event.message ?? 'Unknown error')
+              close()
+            }
+          } catch {
+            // ignore parse errors
           }
-        } catch {
-          // ignore parse errors
+        }
+
+        es.onerror = () => {
+          // Guard: ignore errors from stale connections
+          if (esRef.current !== es) return
+          setIsStreaming(false)
+          setError('Connection error')
+          close()
         }
       }
 
-      es.onerror = () => {
-        // Guard: ignore errors from stale connections
-        if (esRef.current !== es) return
-        setIsStreaming(false)
-        setError('Connection error')
-        close()
+      if (sessionCheckUrl) {
+        // Pre-flight check: detect expired sessions before opening the SSE stream
+        void fetch(sessionCheckUrl, { method: 'HEAD' })
+          .then((res) => {
+            if (res.status === 404) {
+              setIsStreaming(false)
+              setError(
+                'Session expired — please refresh the page to start a new session'
+              )
+            } else {
+              openConnection()
+            }
+          })
+          .catch(() => {
+            // Check itself failed (network down) — attempt the connection anyway
+            openConnection()
+          })
+      } else {
+        openConnection()
       }
     },
     [close]

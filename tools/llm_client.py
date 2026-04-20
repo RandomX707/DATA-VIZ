@@ -38,15 +38,47 @@ def chat(
     """
     client = get_client()
     resolved_model = model or config.LLM_MODEL
-    kwargs: dict = dict(
-        model=resolved_model,
-        max_tokens=max_tokens or config.LLM_MAX_TOKENS,
-        messages=[
+
+    # o1/o3/gpt-5 reasoning models differ from classic chat models:
+    #   1. max_completion_tokens instead of max_tokens
+    #   2. temperature must be omitted (only default=1 is supported)
+    #   3. "system" role support varies by proxy — fold it into the user message
+    #      to avoid role-naming issues entirely (safest across all LiteLLM setups)
+    _REASONING_PREFIXES = ("o1", "o3", "gpt-5")
+    is_reasoning = any(resolved_model.startswith(p) for p in _REASONING_PREFIXES)
+    token_param = "max_completion_tokens" if is_reasoning else "max_tokens"
+
+    if is_reasoning:
+        # Merge system prompt into user message — avoids developer/system role issues
+        messages = [{"role": "user", "content": f"{system}\n\n{user}"}]
+    else:
+        messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
-        ],
-    )
-    if temperature is not None:
+        ]
+
+    kwargs: dict = dict(model=resolved_model, messages=messages)
+    kwargs[token_param] = max_tokens or config.LLM_MAX_TOKENS
+    if temperature is not None and not is_reasoning:
         kwargs["temperature"] = temperature
     response = client.chat.completions.create(**kwargs)
-    return response.choices[0].message.content or ""
+    usage = response.usage
+    print(
+        f"DEBUG llm usage model={resolved_model} "
+        f"prompt={getattr(usage, 'prompt_tokens', '?')} "
+        f"completion={getattr(usage, 'completion_tokens', '?')} "
+        f"total={getattr(usage, 'total_tokens', '?')} "
+        f"finish_reason={response.choices[0].finish_reason}"
+    )
+    content = response.choices[0].message.content
+    if not content:
+        limit = kwargs.get(token_param, "?")
+        raise RuntimeError(
+            f"LLM returned empty content for model '{resolved_model}' "
+            f"(finish_reason={response.choices[0].finish_reason}, "
+            f"{token_param}={limit}). "
+            f"Reasoning models burn tokens thinking before writing — "
+            f"raise LLM_MAX_TOKENS in .env (current: {config.LLM_MAX_TOKENS}) "
+            f"or switch to a non-reasoning model like gpt-4o-mini."
+        )
+    return content

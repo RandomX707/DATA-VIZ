@@ -117,6 +117,7 @@ export default function App() {
       // Load defaults and merge with stored config
       try {
         const defaults = await getDefaults()
+        // Apply defaults if URL is empty or still the old hardcoded placeholder
         if (!supersetConfig.url || supersetConfig.url === 'http://localhost:8088') {
           setSupersetConfig({
             ...supersetConfig,
@@ -124,7 +125,7 @@ export default function App() {
             username: defaults.superset_username,
           })
         }
-        if (!llmModel || llmModel === 'claude-haiku-4-5') {
+        if (!llmModel) {
           setLlmModel(defaults.llm_model)
         }
       } catch {

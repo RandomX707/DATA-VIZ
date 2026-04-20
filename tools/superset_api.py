@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 import urllib.parse
 import uuid
 
@@ -163,7 +161,8 @@ def build_position_json(chart_ids: list[int], chart_specs: list[ChartSpec]) -> d
                 VIZ_TYPE_MAP.get(spec.viz_type, spec.viz_type), spec.width
             )
             width = width if width in (3, 6, 12) else 6
-            entry_id = f"CHART_{chart_id}"
+            cid = int(chart_id)
+            entry_id = f"CHART_{cid}"
             chart_entry_ids.append(entry_id)
             position[entry_id] = {
                 "type": "CHART",
@@ -171,7 +170,7 @@ def build_position_json(chart_ids: list[int], chart_specs: list[ChartSpec]) -> d
                 "children": [],
                 "parents": ["ROOT_ID", "GRID_ID", row_id],
                 "meta": {
-                    "chartId": int(chart_id),
+                    "chartId": cid,
                     "width": width,
                     "height": 50,
                 },
@@ -196,18 +195,32 @@ class SupersetClient:
         token: str | None = None,
         username: str | None = None,
         password: str | None = None,
+        session_cookie: str | None = None,
+        csrf_token: str | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self._token = token
         self._username = username
         self._password = password
+        self._session_cookie = session_cookie
+        self._csrf_token = csrf_token
+        self._cookie_auth = bool(session_cookie)
+        self.superset_version: tuple[int, int, int] = (0, 0, 0)
         # Persistent client — keeps session cookies alive across all requests
         self._session = httpx.Client(timeout=60)
         self._session.headers.update({"Content-Type": "application/json"})
         if token:
             self._session.headers["Authorization"] = f"Bearer {token}"
+        if session_cookie:
+            self._session.cookies.set("session", session_cookie)
+        if csrf_token:
+            self._session.headers["X-CSRFToken"] = csrf_token
 
     def authenticate(self) -> None:
+        # Cookie auth — browser session already authenticated via Keycloak
+        if self._cookie_auth:
+            return
+
         resp = self._session.post(
             f"{self.base_url}/api/v1/security/login",
             json={
@@ -230,6 +243,28 @@ class SupersetClient:
         csrf = self.get_csrf_token()
         self._session.headers["X-CSRFToken"] = csrf
 
+        try:
+            import re
+            ver_resp = self._session.get(f"{self.base_url}/api/v1/")
+            if ver_resp.status_code == 200:
+                ver_str = ver_resp.json().get("version", "") or ""
+                m = re.match(r"(\d+)\.(\d+)\.(\d+)", ver_str)
+                if m:
+                    self.superset_version = (
+                        int(m.group(1)), int(m.group(2)), int(m.group(3))
+                    )
+                else:
+                    major = re.match(r"(\d+)", ver_str)
+                    if major:
+                        self.superset_version = (int(major.group(1)), 0, 0)
+        except Exception:
+            pass
+        print(f"DEBUG version={self.superset_version} is_v6={self.is_v6_or_later}")
+
+    @property
+    def is_v6_or_later(self) -> bool:
+        return self.superset_version[0] >= 6
+
     def get_csrf_token(self) -> str:
         resp = self._session.get(f"{self.base_url}/api/v1/security/csrf_token/")
         if resp.status_code != 200:
@@ -242,7 +277,7 @@ class SupersetClient:
         url = f"{self.base_url}{path}"
         resp = self._session.request(method, url, **kwargs)
 
-        if resp.status_code == 401:
+        if resp.status_code == 401 and not self._cookie_auth:
             self.authenticate()
             resp = self._session.request(method, url, **kwargs)
 
@@ -253,24 +288,69 @@ class SupersetClient:
         return resp
 
     def get_dataset_by_name(self, name: str) -> DatasetInfo:
-        rison_filter = f"(filters:!((col:table_name,opr:eq,value:'{name}')))"
-        encoded = urllib.parse.quote(rison_filter)
-        resp = self._request("GET", f"/api/v1/dataset/?q={encoded}")
-        data = resp.json()
-        results = data.get("result", [])
-        if not results:
-            # Try matching on dataset name directly
-            rison_filter2 = f"(filters:!((col:datasource_name,opr:eq,value:'{name}')))"
-            encoded2 = urllib.parse.quote(rison_filter2)
-            resp2 = self._request("GET", f"/api/v1/dataset/?q={encoded2}")
-            results = resp2.json().get("result", [])
-        if not results:
-            raise RuntimeError(
-                f"Dataset '{name}' not found in Superset. "
-                "Ensure the dataset exists and the name matches exactly."
+        name = name.strip()
+        # Strategy 1: filter by table_name (most reliable)
+        encoded = urllib.parse.quote(
+            f"(filters:!((col:table_name,opr:eq,value:'{name}')))"
+        )
+        response = self._request("GET", f"/api/v1/dataset/?q={encoded}")
+        data = response.json()
+        if data.get("count", 0) > 0:
+            return self._parse_dataset(data["result"][0])
+
+        # Strategy 2: filter by schema + table_name
+        # (if name includes schema prefix like "public.tablename")
+        if "." in name:
+            schema, table = name.split(".", 1)
+            encoded = urllib.parse.quote(
+                f"(filters:!((col:table_name,opr:eq,value:'{table}')"
+                f",(col:schema,opr:eq,value:'{schema}')))"
             )
-        ds = results[0]
-        return self.get_dataset_columns(ds["id"])
+            response = self._request("GET", f"/api/v1/dataset/?q={encoded}")
+            data = response.json()
+            if data.get("count", 0) > 0:
+                return self._parse_dataset(data["result"][0])
+
+        # Strategy 3: fetch all datasets and match by name in Python
+        # (fallback for any filter restriction issues — cap at 200 datasets)
+        page = 0
+        page_size = 100
+        while True:
+            encoded = urllib.parse.quote(
+                f"(page:{page},page_size:{page_size},"
+                f"order_column:table_name,order_direction:asc)"
+            )
+            response = self._request("GET", f"/api/v1/dataset/?q={encoded}")
+            data = response.json()
+            results = data.get("result", [])
+
+            for item in results:
+                table_name = item.get("table_name", "")
+                schema = item.get("schema", "")
+                full_name = f"{schema}.{table_name}" if schema else table_name
+                if (
+                    table_name == name
+                    or full_name == name
+                    or item.get("datasource_name", "") == name
+                ):
+                    return self._parse_dataset(item)
+
+            if len(results) < page_size:
+                break
+            page += 1
+            if page >= 2:  # cap at 200 datasets (2 pages of 100)
+                break
+
+        raise RuntimeError(
+            f"Dataset '{name}' not found in Superset. "
+            f"Check the dataset name matches exactly what is "
+            f"shown in Superset under Datasets. "
+            f"The name is case-sensitive."
+        )
+
+    def _parse_dataset(self, result: dict) -> DatasetInfo:
+        """Fetch full DatasetInfo for a dataset list-API result entry."""
+        return self.get_dataset_columns(result["id"])
 
     def get_dataset_columns(self, dataset_id: int) -> DatasetInfo:
         resp = self._request("GET", f"/api/v1/dataset/{dataset_id}")
@@ -375,66 +455,91 @@ class SupersetClient:
         )
         dashboard_id = resp.json()["id"]
         self._set_dashboard_layout(dashboard_id, chart_ids, position_json)
+        # Separate publish PUT — non-fatal; ensures published=True survives the
+        # layout PUT on both 5.x and 6.x regardless of what the POST returned
+        try:
+            self._request(
+                "PUT",
+                f"/api/v1/dashboard/{dashboard_id}",
+                json={"published": True},
+            )
+        except Exception:
+            pass
         url = f"{self.base_url}/superset/dashboard/{dashboard_id}"
         return dashboard_id, url
+
+    def _build_dashboard_put_body(
+        self,
+        position_json: dict,
+        json_metadata: dict | None = None,
+    ) -> dict:
+        """Build the PUT body for /api/v1/dashboard/{id}.
+
+        position_json is the authoritative source for which charts appear on
+        the dashboard — Superset renders from it on both 5.x and 6.x.
+        The `slices` field is NOT included: Superset 6.x rejects it with
+        HTTP 400 {"slices": ["Unknown field."]}, and it is not needed for
+        chart rendering on 5.x either.
+
+        position_json and json_metadata are serialised to JSON strings as
+        required by the Superset REST API.
+        """
+        return {
+            "position_json": json.dumps(position_json),
+            "json_metadata": json.dumps(
+                json_metadata if json_metadata is not None else {"default_filters": "{}"}
+            ),
+        }
 
     def _set_dashboard_layout(
         self, dashboard_id: int, chart_ids: list[int], position_json: dict
     ) -> None:
-        # Step 1: set position_json layout
-        self._request(
-            "PUT",
-            f"/api/v1/dashboard/{dashboard_id}",
-            json={
-                "position_json": json.dumps(position_json),
-                "json_metadata": json.dumps({"default_filters": "{}"}),
-            },
-        )
-        # Step 2: sync chart ownership directly via Superset's ORM.
-        # The REST API has no writable /charts endpoint in Superset 5.x —
-        # the dashboard_slices table must be updated through the model layer.
-        self._sync_chart_ownership(dashboard_id, [int(cid) for cid in chart_ids])
+        body = self._build_dashboard_put_body(position_json)
+        self._request("PUT", f"/api/v1/dashboard/{dashboard_id}", json=body)
+        self._add_charts_to_dashboard(dashboard_id, chart_ids)
 
-    @staticmethod
-    def _sync_chart_ownership(dashboard_id: int, chart_ids: list[int]) -> None:
-        """
-        Populate dashboard_slices by running a subprocess with Superset's
-        Flask app context. This is necessary because Superset 5.x REST API
-        does not expose a writable endpoint for chart-dashboard association.
-        """
-        script = f"""
-import os, sys
-os.environ['SUPERSET_CONFIG_PATH'] = '/home/yashaswiram/.superset/superset_config.py'
-sys.path.insert(0, '/home/yashaswiram/.local/lib/python3.10/site-packages')
-from superset.app import create_app
-app = create_app()
-with app.app_context():
-    from superset import db
-    from superset.models.dashboard import Dashboard
-    from superset.models.slice import Slice
-    dash = db.session.get(Dashboard, {dashboard_id})
-    if dash is None:
-        print("Dashboard {dashboard_id} not found", file=sys.stderr)
-        sys.exit(1)
-    slices = db.session.query(Slice).filter(Slice.id.in_({chart_ids})).all()
-    dash.slices = slices
-    db.session.commit()
-    print(f"Synced {{len(slices)}} chart(s) to dashboard {dashboard_id}")
-"""
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"Chart ownership sync failed for dashboard {dashboard_id}:\n"
-                f"{result.stderr}"
+    def _add_charts_to_dashboard(
+        self, dashboard_id: int, chart_ids: list[int]
+    ) -> None:
+        ids = [int(c) for c in chart_ids]
+
+        print(f"DEBUG is_v6_or_later={self.is_v6_or_later}")
+        print(f"DEBUG superset_version={self.superset_version}")
+
+        # Strategy 1: dedicated /charts endpoint
+        try:
+            self._request(
+                "PUT",
+                f"/api/v1/dashboard/{dashboard_id}/charts",
+                json={"chart_ids": ids},
             )
-        # Print the confirmation line from stdout (filtered from Superset noise)
-        for line in result.stdout.splitlines():
-            if "Synced" in line:
-                print(f"  [dim]{line}[/dim]")
+            print("DEBUG /charts endpoint succeeded")
+            return
+        except Exception as exc:
+            print(f"DEBUG /charts endpoint failed: {exc}")
+
+        # Strategy 2: update each chart's dashboards list individually
+        # Works on both 5.x and 6.x — no "slices" field used
+        for chart_id in ids:
+            try:
+                chart_resp = self._session.get(
+                    f"{self.base_url}/api/v1/chart/{chart_id}",
+                    headers=dict(self._session.headers),
+                )
+                if chart_resp.status_code == 200:
+                    existing = chart_resp.json().get("result", {})
+                    current_dash_ids = [
+                        d["id"] for d in existing.get("dashboards", [])
+                    ]
+                    if dashboard_id not in current_dash_ids:
+                        current_dash_ids.append(dashboard_id)
+                        self._request(
+                            "PUT",
+                            f"/api/v1/chart/{chart_id}",
+                            json={"dashboards": current_dash_ids},
+                        )
+            except Exception as exc:
+                print(f"DEBUG chart {chart_id} link failed: {exc}")
 
     def update_dashboard(
         self,
@@ -443,6 +548,15 @@ with app.app_context():
         position_json: dict,
     ) -> str:
         self._set_dashboard_layout(dashboard_id, chart_ids, position_json)
+        # Separate publish PUT — non-fatal
+        try:
+            self._request(
+                "PUT",
+                f"/api/v1/dashboard/{dashboard_id}",
+                json={"published": True},
+            )
+        except Exception:
+            pass
         url = f"{self.base_url}/superset/dashboard/{dashboard_id}"
         return url
 

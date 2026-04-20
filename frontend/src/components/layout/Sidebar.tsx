@@ -13,7 +13,7 @@ import { clsx } from 'clsx'
 import { toast } from 'sonner'
 import { useAppStore } from '../../store/appStore'
 import { updateConfig, testDbConnection } from '../../api/client'
-import { Input, Select } from '../ui/Input'
+import { Input, Select, Textarea } from '../ui/Input'
 import { Button } from '../ui/Button'
 import { Badge } from '../ui/Badge'
 import { exportAuditJSON } from '../ui/AuditPanel'
@@ -63,6 +63,7 @@ const STATUS_COLORS: Record<string, string> = {
 export function Sidebar() {
   const {
     sessionId,
+    activePhase,
     dbConfig,
     supersetConfig,
     llmModel,
@@ -149,6 +150,11 @@ export function Sidebar() {
         icon={<Database size={13} />}
         defaultOpen={true}
       >
+        {activePhase === 3 && (
+          <p className="text-xs text-text-dim mt-1">
+            Not required for dashboard building
+          </p>
+        )}
         <Select
           label="Type"
           value={dbConfig.type}
@@ -245,6 +251,23 @@ export function Sidebar() {
             setSupersetConfig({ ...supersetConfig, password: e.target.value })
           }
           placeholder="••••••••"
+        />
+        <Textarea
+          label="Session Cookie (for SSO/Keycloak)"
+          rows={3}
+          value={supersetConfig.session_cookie ?? ''}
+          onChange={(e) =>
+            setSupersetConfig({ ...supersetConfig, session_cookie: e.target.value })
+          }
+          placeholder="Paste the 'session' cookie value from browser DevTools"
+        />
+        <Input
+          label="CSRF Token (for SSO/Keycloak)"
+          value={supersetConfig.csrf_token ?? ''}
+          onChange={(e) =>
+            setSupersetConfig({ ...supersetConfig, csrf_token: e.target.value })
+          }
+          placeholder="Paste X-CSRFToken header value"
         />
       </CollapsibleSection>
 
